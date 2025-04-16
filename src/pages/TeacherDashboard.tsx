@@ -1,3 +1,4 @@
+
 import { useEffect, useState } from "react";
 import { BarChart, CalendarClock, GraduationCap, Users as UsersIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -53,29 +54,36 @@ const TeacherDashboard = () => {
         if (profileError) throw profileError;
         setProfile(profileData);
 
-        // Fetch teacher's classrooms
+        // Fetch teacher's classrooms with student counts
         const { data: classroomsData, error: classroomsError } = await supabase
           .from('classrooms')
-          .select(`
-            id,
-            name,
-            description,
-            enrollments (
-              count(*) as students_count,
-              avg(progress) as avg_progress
-            )
-          `)
-          .eq('teacher_id', user.id);
+          .select('id, name, description');
 
         if (classroomsError) throw classroomsError;
         
-        // Transform classrooms data
-        const transformedClassrooms = classroomsData.map(classroom => ({
-          ...classroom,
-          students_count: classroom.enrollments[0]?.students_count ?? 0,
-          avg_progress: Math.round(classroom.enrollments[0]?.avg_progress ?? 0)
-        }));
-        setClassrooms(transformedClassrooms);
+        // Fetch enrollment data separately for each classroom
+        const classroomsWithEnrollments = await Promise.all(
+          classroomsData.map(async (classroom) => {
+            const { data: enrollmentsData, error: enrollmentsError } = await supabase
+              .from('enrollments')
+              .select('student_id, progress')
+              .eq('classroom_id', classroom.id);
+            
+            if (enrollmentsError) throw enrollmentsError;
+            
+            const students_count = enrollmentsData?.length || 0;
+            const total_progress = enrollmentsData?.reduce((sum, enrollment) => sum + enrollment.progress, 0) || 0;
+            const avg_progress = students_count > 0 ? Math.round(total_progress / students_count) : 0;
+            
+            return {
+              ...classroom,
+              students_count,
+              avg_progress
+            };
+          })
+        );
+        
+        setClassrooms(classroomsWithEnrollments);
 
         // Fetch announcements
         const { data: announcementsData, error: announcementsError } = await supabase
@@ -88,12 +96,16 @@ const TeacherDashboard = () => {
         setAnnouncements(announcementsData);
 
         // Calculate stats
-        const totalStudents = transformedClassrooms.reduce((sum, classroom) => sum + classroom.students_count, 0);
+        const totalStudents = classroomsWithEnrollments.reduce((sum, classroom) => sum + classroom.students_count, 0);
+        const avgProgress = classroomsWithEnrollments.length > 0 
+          ? Math.round(classroomsWithEnrollments.reduce((sum, c) => sum + c.avg_progress, 0) / classroomsWithEnrollments.length) 
+          : 0;
+          
         setStats({
           totalStudents,
-          activeLessons: transformedClassrooms.length,
-          completionRate: `${Math.round(transformedClassrooms.reduce((sum, c) => sum + c.avg_progress, 0) / transformedClassrooms.length)}%`,
-          weekSessions: `${transformedClassrooms.length} sessions`
+          activeLessons: classroomsWithEnrollments.length,
+          completionRate: `${avgProgress}%`,
+          weekSessions: `${classroomsWithEnrollments.length} sessions`
         });
 
       } catch (error) {
